@@ -2,15 +2,17 @@ import os
 import glob
 import asyncio
 import argparse
+from time import time
 from itertools import cycle
 
 from pyrogram import Client
 from better_proxy import Proxy
 
 from bot.config import settings
+from bot.exceptions import InvalidSession
 from bot.utils import logger
-from bot.core.tapper import run_tapper
-from bot.core.registrator import register_sessions
+from bot.core.tapper import run_tapper, Tapper
+from bot.core.registrator import register_sessions, get_token_json
 
 banner = """
 
@@ -50,13 +52,15 @@ async def get_tg_clients() -> list[Client]:
     if not session_names:
         raise FileNotFoundError("Not found session files")
 
-    if not settings.API_ID or not settings.API_HASH:
-        raise ValueError("API_ID and API_HASH not found in the .env file.")
+    # if not settings.API_ID or not settings.API_HASH:
+    #     raise ValueError("API_ID and API_HASH not found in the .env file.")
+
+    data = get_token_json()
 
     tg_clients = [Client(
         name=session_name,
-        api_id=settings.API_ID,
-        api_hash=settings.API_HASH,
+        api_id=data[session_name]['id'],
+        api_hash=data[session_name]['hash'],
         workdir='sessions/',
         plugins=dict(root='bot/plugins')
     ) for session_name in session_names]
@@ -93,7 +97,8 @@ async def process() -> None:
     elif action == 2:
         tg_clients = await get_tg_clients()
 
-        await run_tasks(tg_clients=tg_clients)
+        # await run_tasks(tg_clients=tg_clients)
+        await run_tasks_new(tg_clients=tg_clients)
 
 
 async def run_tasks(tg_clients: list[Client]):
@@ -103,3 +108,23 @@ async def run_tasks(tg_clients: list[Client]):
              for tg_client in tg_clients]
 
     await asyncio.gather(*tasks)
+
+
+async def run_tasks_new(tg_clients: list[Client]):
+    proxies = get_proxies()
+    proxies_cycle = cycle(proxies) if proxies else None
+
+    tappers = [Tapper(tg_client=tg_client, proxy=next(proxies_cycle) if proxies_cycle else None)
+               for tg_client in tg_clients]
+    for tapper in tappers:
+        await tapper.setup()
+
+    # times = range(len(tappers))
+    # times = [0] * len(tappers)
+    times = [0, 0, 0, 0]
+    while True:
+        for i, tapper in enumerate(tappers):
+            try:
+                times[i] = await tapper.run(sum(times) - times[i])
+            except InvalidSession:
+                logger.error(f'{tapper.session_name} | Invalid Session')
